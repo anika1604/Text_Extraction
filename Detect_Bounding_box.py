@@ -1,112 +1,62 @@
 import cv2
-import numpy as np
-import imutils
 import pytesseract
+import numpy as np
 
-# Set path for Tesseract-OCR
-pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+# Load image
+image_path = "img3.png"
+image = cv2.imread(image_path)
 
-def detect_document(image_path):
-    """Detects the largest document-like contour in the image."""
-    image = cv2.imread(image_path)
+# Convert to grayscale and apply adaptive thresholding
+gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, cv2.THRESH_BINARY, 11, 2)
 
-    if image is None:
-        raise FileNotFoundError(f"Error: Cannot open image file '{image_path}'. Check the file path!")
+# Remove noise using morphological operations
+kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1, 1))
+cleaned = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
 
-    orig = image.copy()
-    
-    # Convert to grayscale
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    
-    # Apply Gaussian Blur to reduce noise
-    blurred = cv2.GaussianBlur(gray, (5,5),0)
-    
-    # Detect edges using Canny
-    edged = cv2.Canny(blurred, 50, 150)
+# Perform OCR with bounding box extraction
+custom_config = r'--oem 3 --psm 6'  # OCR Engine Mode 3, Page Segmentation Mode 6
+data = pytesseract.image_to_data(cleaned, config=custom_config, output_type=pytesseract.Output.DICT)
 
-    # Find contours
-    contours = cv2.findContours(edged.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    contours = imutils.grab_contours(contours)
-    
-    # Sort by largest contour
-    contours = sorted(contours, key=cv2.contourArea, reverse=True)
+# Get coordinates of detected words to draw a **single bounding box**
+x_min, y_min = np.inf, np.inf
+x_max, y_max = 0, 0
 
-    doc_contour = None  # Initialize contour
+text_blocks = []
 
-    for contour in contours:
-        peri = cv2.arcLength(contour, True)  # Perimeter
-        approx = cv2.approxPolyDP(contour, 0.02 * peri, True)  # Approximate shape
+for i in range(len(data['text'])):
+    if data['text'][i].strip():  # Ignore empty text
+        x, y, w, h = data['left'][i], data['top'][i], data['width'][i], data['height'][i]
+        x_min, y_min = min(x_min, x), min(y_min, y)
+        x_max, y_max = max(x_max, x + w), max(y_max, y + h)
 
-        if len(approx) == 4:  # Paper should have 4 corners
-            doc_contour = approx
-            break
-    
-    if doc_contour is None:
-        raise ValueError("Error: No document detected. Try using a clearer image.")
+        # Store words along with their positions for proper ordering
+        text_blocks.append((data['block_num'][i], data['par_num'][i], data['line_num'][i], data['word_num'][i], data['text'][i]))
 
-    return orig, doc_contour
+# **Sort text based on block, paragraph, line, and word order**
+text_blocks.sort()
 
-def warp_perspective(image, doc_contour):
-    """Applies a perspective transform to get a top-down view of the document."""
-    doc_contour = doc_contour.reshape(4, 2)
+# Reconstruct text in correct order
+extracted_text = ""
+current_line = -1
+for block, para, line, word, text in text_blocks:
+    if line != current_line:
+        extracted_text += "\n"  # Add new line when moving to a new line in document
+        current_line = line
+    extracted_text += " " + text
 
-    # Get ordered points
-    rect = np.zeros((4, 2), dtype="float32")
-    s = doc_contour.sum(axis=1)
-    diff = np.diff(doc_contour, axis=1)
+# Draw **one bounding box** around the full text region
+if x_min < np.inf and y_min < np.inf:  # Ensure at least one text block is detected
+    cv2.rectangle(image, (x_min, y_min), (x_max, y_max), (0, 255, 0), 2)  # Green bounding box
 
-    rect[0] = doc_contour[np.argmin(s)]  # Top-left
-    rect[2] = doc_contour[np.argmax(s)]  # Bottom-right
-    rect[1] = doc_contour[np.argmin(diff)]  # Top-right
-    rect[3] = doc_contour[np.argmax(diff)]  # Bottom-left
+# Display the image with the bounding box
+cv2.imshow("Text Detection", image)
+cv2.waitKey(0)
+cv2.destroyAllWindows()
 
-    (tl, tr, br, bl) = rect
+# Save extracted text to a file
+output_file = "extracted_text.txt"
+with open(output_file, "w", encoding="utf-8") as file:
+    file.write(extracted_text.strip())
 
-    widthA = np.linalg.norm(br - bl)
-    widthB = np.linalg.norm(tr - tl)
-    maxWidth = max(int(widthA), int(widthB))
-
-    heightA = np.linalg.norm(tr - br)
-    heightB = np.linalg.norm(tl - bl)
-    maxHeight = max(int(heightA), int(heightB))
-
-    dst = np.array([
-        [0, 0],
-        [maxWidth - 1, 0],
-        [maxWidth - 1, maxHeight - 1],
-        [0, maxHeight - 1]
-    ], dtype="float32")
-
-    M = cv2.getPerspectiveTransform(rect, dst)
-    warped = cv2.warpPerspective(image, M, (maxWidth, maxHeight))
-
-    return warped
-
-def extract_text(image):
-    """Extracts text from the preprocessed document image using OCR."""
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    _, thresh = cv2.threshold(gray, 150, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-
-    text = pytesseract.image_to_string(thresh, lang='eng')
-
-    return text
-
-# ==== Run the pipeline ====
-image_path = "img3.png"  # Ensure this is correct or use the absolute path
-
-try:
-    original, bounding_box = detect_document(image_path)
-    warped_image = warp_perspective(original, bounding_box)
-    extracted_text = extract_text(warped_image)
-
-    # Show results
-    cv2.imshow("Original with Bounding Box", original)
-    cv2.imshow("Warped Document", warped_image)
-
-    print("\n===== Extracted Text =====\n")
-    print(extracted_text)
-
-    cv2.waitKey(0)
-    cv2.destroyAllWindows()
-except Exception as e:
-    print(e)
+print(f"Extracted text saved to {output_file}")

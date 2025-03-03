@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>OCR Text Extraction</title>
+    <style>
+        body { font-family: Arial, sans-serif; text-align: center; }
+        canvas { border: 1px solid black; cursor: crosshair; display: block; margin: 10px auto; }
+        #output { margin-top: 20px; font-weight: bold; }
+    </style>
+</head>
+<body>
+
+    <h1>OCR Text Extraction</h1>
+
+    <input type="file" id="imageInput" accept="image/*">
+    <button onclick="uploadImage()">Upload</button>
+
+    <br><br>
+    <canvas id="canvas" width="500" height="300"></canvas>
+
+    <p>Click & drag to select the text area.</p>
+
+    <button onclick="extractText()">Extract Text</button>
+
+    <h2>Extracted Text:</h2>
+    <p id="output"></p>
+
+    <script>
+        let uploadedFilePath = "";
+        let canvas = document.getElementById("canvas");
+        let ctx = canvas.getContext("2d");
+        let img = new Image();
+        let startX, startY, endX, endY, dragging = false;
+        let imgScale = 1; // Scale factor for resizing
+
+        function uploadImage() {
+            let fileInput = document.getElementById("imageInput");
+            if (fileInput.files.length === 0) {
+                alert("Please select an image first!");
+                return;
+            }
+
+            let formData = new FormData();
+            formData.append("image", fileInput.files[0]);
+
+            fetch("/upload", { method: "POST", body: formData })
+                .then(response => response.json())
+                .then(data => {
+                    if (data.file_path) {
+                        uploadedFilePath = data.file_path;
+                        img.src = uploadedFilePath;
+                    } else {
+                        alert("Upload failed!");
+                    }
+                })
+                .catch(error => console.error("Error:", error));
+        }
+
+        img.onload = function() {
+            let maxWidth = 500; // Set max display width
+            imgScale = Math.min(1, maxWidth / img.width); // Adjust scale
+            canvas.width = img.width * imgScale;
+            canvas.height = img.height * imgScale;
+            ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+        };
+
+        // Handle drawing selection on canvas
+        canvas.addEventListener("mousedown", function(e) {
+            startX = e.offsetX;
+            startY = e.offsetY;
+            dragging = true;
+        });
+
+        canvas.addEventListener("mousemove", function(e) {
+            if (dragging) {
+                endX = e.offsetX;
+                endY = e.offsetY;
+                redraw();
+            }
+        });
+
+        canvas.addEventListener("mouseup", function() {
+            dragging = false;
+        });
+
+        function redraw() {
+            ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+            if (endX && endY) {
+                ctx.strokeStyle = "red";
+                ctx.lineWidth = 2;
+                ctx.strokeRect(startX, startY, endX - startX, endY - startY);
+            }
+        }
+
+        function extractText() {
+            if (!uploadedFilePath) {
+                alert("Upload an image first!");
+                return;
+            }
+
+            if (typeof startX === "undefined" || typeof endX === "undefined") {
+                alert("Please select a text area first!");
+                return;
+            }
+
+            let data = {
+                file_path: uploadedFilePath,
+                x1: Math.round(startX / imgScale),
+                y1: Math.round(startY / imgScale),
+                x2: Math.round(endX / imgScale),
+                y2: Math.round(endY / imgScale)
+            };
+
+            fetch("/extract_text", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(data)
+            })
+            .then(response => response.json())
+            .then(data => {
+                document.getElementById("output").innerText = data.extracted_text || "No text found.";
+            })
+            .catch(error => console.error("Error:", error));
+        }
+    </script>
+
+</body>
+</html>
